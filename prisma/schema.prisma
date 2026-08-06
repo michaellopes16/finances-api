@@ -1,0 +1,45 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Group {
+  id           String        @id @default(uuid())
+  name         String
+  type         String        // "expense" ou "investment"
+  categories   String[]      // Lista de categorias (array de strings nativo do PostgreSQL)
+  transactions Transaction[]
+  investments  Investment[]
+}
+
+model Transaction {
+  id          String   @id @default(uuid())
+  description String
+  amount      Float
+  category    String
+  month       String   // ex: "Agosto 2026"
+  status      String   // "paid" ou "pending"
+  
+  groupId     String
+  group       Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Investment {
+  id          String   @id @default(uuid())
+  description String
+  amount      Float
+  category    String
+  month       String   // ex: "Agosto 2026"
+  
+  groupId     String
+  group       Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
