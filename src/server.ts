@@ -35,6 +35,32 @@ const parseRequiredText = (value: unknown) => {
   return text.length > 0 ? text : null;
 };
 
+const normalizeCategories = (value: unknown) => {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.map((item) => String(item).trim()).filter(Boolean)));
+};
+
+const validateEntryGroupAndCategory = async (
+  groupIdValue: unknown,
+  categoryValue: unknown,
+  expectedType: 'income' | 'expense' | 'investment',
+) => {
+  const groupId = parseRequiredText(groupIdValue);
+  const category = parseRequiredText(categoryValue);
+
+  if (!groupId) return { error: 'Grupo não informado.' as const };
+  if (!category) return { error: 'Categoria não informada.' as const };
+
+  const group = await prisma.group.findUnique({ where: { id: groupId } });
+  if (!group) return { error: 'O grupo selecionado não existe mais.' as const };
+  if (group.type !== expectedType) return { error: 'O grupo selecionado possui um tipo incompatível com o lançamento.' as const };
+  if (!group.categories.includes(category)) {
+    return { error: `A categoria "${category}" não existe mais neste grupo.` as const };
+  }
+
+  return { groupId, category };
+};
+
 const investmentInclude = {
   contributions: {
     orderBy: { createdAt: 'desc' as const },
@@ -106,7 +132,20 @@ app.get('/groups', asyncHandler(async (req, res) => {
 }));
 
 app.post('/groups', asyncHandler(async (req, res) => {
-  const { name, type, categories } = req.body;
+  const name = parseRequiredText(req.body.name);
+  const type = parseRequiredText(req.body.type);
+  const categories = normalizeCategories(req.body.categories);
+
+  if (!name || !type) {
+    res.status(400).json({ error: 'Informe nome e tipo do grupo.' });
+    return;
+  }
+
+  if (categories.length === 0) {
+    res.status(400).json({ error: 'O grupo precisa ter pelo menos uma categoria.' });
+    return;
+  }
+
   const newGroup = await prisma.group.create({
     data: { name, type, categories },
   });
@@ -114,7 +153,19 @@ app.post('/groups', asyncHandler(async (req, res) => {
 }));
 
 app.put('/groups/:id', asyncHandler(async (req, res) => {
-  const { name, categories } = req.body;
+  const name = parseRequiredText(req.body.name);
+  const categories = normalizeCategories(req.body.categories);
+
+  if (!name) {
+    res.status(400).json({ error: 'Informe o nome do grupo.' });
+    return;
+  }
+
+  if (categories.length === 0) {
+    res.status(400).json({ error: 'O grupo precisa ter pelo menos uma categoria.' });
+    return;
+  }
+
   const updatedGroup = await prisma.group.update({
     where: { id: req.params.id },
     data: { name, categories },
@@ -144,32 +195,74 @@ app.get('/incomes', asyncHandler(async (req, res) => {
 }));
 
 app.post('/incomes', asyncHandler(async (req, res) => {
-  const { description, amount: rawAmount, category, month, status, groupId } = req.body;
-  const amount = parsePositiveAmount(rawAmount);
+  const description = parseRequiredText(req.body.description);
+  const month = parseRequiredText(req.body.month);
+  const status = parseRequiredText(req.body.status) ?? 'pending';
+  const amount = parsePositiveAmount(req.body.amount);
+  const groupValidation = await validateEntryGroupAndCategory(req.body.groupId, req.body.category, 'income');
+
+  if (!description || !month) {
+    res.status(400).json({ error: 'Informe descrição e mês da receita.' });
+    return;
+  }
+
   if (amount === null) {
     res.status(400).json({ error: 'O valor da receita deve ser maior que zero.' });
     return;
   }
 
-  const newIncome = await prisma.transaction.create({
-    data: { description, amount, category, month, status, groupId },
+  if ('error' in groupValidation) {
+    res.status(400).json({ error: groupValidation.error });
+    return;
+  }
+
+  const created = await prisma.transaction.create({
+    data: {
+      description,
+      amount,
+      category: groupValidation.category,
+      month,
+      status,
+      groupId: groupValidation.groupId,
+    },
   });
-  res.status(201).json(newIncome);
+  res.status(201).json(created);
 }));
 
 app.put('/incomes/:id', asyncHandler(async (req, res) => {
-  const { description, amount: rawAmount, category, month, status, groupId } = req.body;
-  const amount = parsePositiveAmount(rawAmount);
+  const description = parseRequiredText(req.body.description);
+  const month = parseRequiredText(req.body.month);
+  const status = parseRequiredText(req.body.status) ?? 'pending';
+  const amount = parsePositiveAmount(req.body.amount);
+  const groupValidation = await validateEntryGroupAndCategory(req.body.groupId, req.body.category, 'income');
+
+  if (!description || !month) {
+    res.status(400).json({ error: 'Informe descrição e mês da receita.' });
+    return;
+  }
+
   if (amount === null) {
     res.status(400).json({ error: 'O valor da receita deve ser maior que zero.' });
     return;
   }
 
-  const updatedIncome = await prisma.transaction.update({
+  if ('error' in groupValidation) {
+    res.status(400).json({ error: groupValidation.error });
+    return;
+  }
+
+  const updated = await prisma.transaction.update({
     where: { id: req.params.id },
-    data: { description, amount, category, month, status, groupId },
+    data: {
+      description,
+      amount,
+      category: groupValidation.category,
+      month,
+      status,
+      groupId: groupValidation.groupId,
+    },
   });
-  res.json(updatedIncome);
+  res.json(updated);
 }));
 
 app.patch('/incomes/:id/status', asyncHandler(async (req, res) => {
@@ -203,32 +296,74 @@ app.get('/transactions', asyncHandler(async (req, res) => {
 }));
 
 app.post('/transactions', asyncHandler(async (req, res) => {
-  const { description, amount: rawAmount, category, month, status, groupId } = req.body;
-  const amount = parsePositiveAmount(rawAmount);
+  const description = parseRequiredText(req.body.description);
+  const month = parseRequiredText(req.body.month);
+  const status = parseRequiredText(req.body.status) ?? 'pending';
+  const amount = parsePositiveAmount(req.body.amount);
+  const groupValidation = await validateEntryGroupAndCategory(req.body.groupId, req.body.category, 'expense');
+
+  if (!description || !month) {
+    res.status(400).json({ error: 'Informe descrição e mês da despesa.' });
+    return;
+  }
+
   if (amount === null) {
     res.status(400).json({ error: 'O valor da despesa deve ser maior que zero.' });
     return;
   }
 
-  const newTx = await prisma.transaction.create({
-    data: { description, amount, category, month, status, groupId },
+  if ('error' in groupValidation) {
+    res.status(400).json({ error: groupValidation.error });
+    return;
+  }
+
+  const created = await prisma.transaction.create({
+    data: {
+      description,
+      amount,
+      category: groupValidation.category,
+      month,
+      status,
+      groupId: groupValidation.groupId,
+    },
   });
-  res.status(201).json(newTx);
+  res.status(201).json(created);
 }));
 
 app.put('/transactions/:id', asyncHandler(async (req, res) => {
-  const { description, amount: rawAmount, category, month, status, groupId } = req.body;
-  const amount = parsePositiveAmount(rawAmount);
+  const description = parseRequiredText(req.body.description);
+  const month = parseRequiredText(req.body.month);
+  const status = parseRequiredText(req.body.status) ?? 'pending';
+  const amount = parsePositiveAmount(req.body.amount);
+  const groupValidation = await validateEntryGroupAndCategory(req.body.groupId, req.body.category, 'expense');
+
+  if (!description || !month) {
+    res.status(400).json({ error: 'Informe descrição e mês da despesa.' });
+    return;
+  }
+
   if (amount === null) {
     res.status(400).json({ error: 'O valor da despesa deve ser maior que zero.' });
     return;
   }
 
-  const updatedTx = await prisma.transaction.update({
+  if ('error' in groupValidation) {
+    res.status(400).json({ error: groupValidation.error });
+    return;
+  }
+
+  const updated = await prisma.transaction.update({
     where: { id: req.params.id },
-    data: { description, amount, category, month, status, groupId },
+    data: {
+      description,
+      amount,
+      category: groupValidation.category,
+      month,
+      status,
+      groupId: groupValidation.groupId,
+    },
   });
-  res.json(updatedTx);
+  res.json(updated);
 }));
 
 app.patch('/transactions/:id/status', asyncHandler(async (req, res) => {
@@ -266,9 +401,15 @@ app.get('/investments', asyncHandler(async (_req, res) => {
  * O primeiro aporte passa a afetar o saldo restante daquele mês.
  */
 app.post('/investments', asyncHandler(async (req, res) => {
-  const { description, amount: rawAmount, category, month, groupId } = req.body;
-  const amount = parsePositiveAmount(rawAmount);
-  const normalizedMonth = parseRequiredText(month);
+  const description = parseRequiredText(req.body.description);
+  const amount = parsePositiveAmount(req.body.amount);
+  const normalizedMonth = parseRequiredText(req.body.month);
+  const groupValidation = await validateEntryGroupAndCategory(req.body.groupId, req.body.category, 'investment');
+
+  if (!description) {
+    res.status(400).json({ error: 'Informe a descrição do investimento.' });
+    return;
+  }
 
   if (amount === null) {
     res.status(400).json({ error: 'O valor do investimento deve ser maior que zero.' });
@@ -280,13 +421,18 @@ app.post('/investments', asyncHandler(async (req, res) => {
     return;
   }
 
+  if ('error' in groupValidation) {
+    res.status(400).json({ error: groupValidation.error });
+    return;
+  }
+
   const newInv = await prisma.investment.create({
     data: {
       description,
       amount,
-      category,
+      category: groupValidation.category,
       month: normalizedMonth,
-      groupId,
+      groupId: groupValidation.groupId,
       historyInitialized: true,
       contributions: {
         create: {

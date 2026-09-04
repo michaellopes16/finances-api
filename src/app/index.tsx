@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
+import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import Svg, { Circle } from 'react-native-svg'
 import { api } from '../services/api'
 
@@ -65,6 +65,7 @@ export default function Dashboard() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editData, setEditData] = useState<Partial<any>>({})
   const [incrementValue, setIncrementValue] = useState<string>('')
+  const [isSavingItem, setIsSavingItem] = useState(false)
 
   // --- Edição de aportes ---
   const [editingContributionId, setEditingContributionId] = useState<string | null>(null)
@@ -253,40 +254,92 @@ export default function Dashboard() {
     } catch (e) { console.error("Erro ao mudar status", e); }
   }
 
-  const handleSaveItem = async (typeKey: 'income'|'expense'|'investment') => {
-    const description = String(editData.description ?? '').trim()
-    const amount = parseAmountInput(String(editData.amount ?? ''))
+  const getGroupsByType = (typeKey: 'income'|'expense'|'investment') => {
+    if (typeKey === 'income') return incomeGroups
+    if (typeKey === 'expense') return expenseGroups
+    return investmentGroups
+  }
 
-    if (!description || !Number.isFinite(amount) || amount <= 0) {
-      Alert.alert('Valor inválido', 'Informe uma descrição e um valor maior que zero.')
+  const startNewItem = (group: Group, typeKey: 'income'|'expense'|'investment') => {
+    const categories = (group.categories ?? []).map((c) => c.trim()).filter(Boolean)
+
+    if (categories.length === 0) {
+      Alert.alert(
+        'Categoria necessária',
+        'Este grupo não possui categorias. Edite o grupo e cadastre pelo menos uma categoria antes de adicionar um lançamento.',
+      )
       return
     }
+
+    setEditingId('new')
+    setEditData({
+      id: 'new',
+      description: '',
+      amount: '',
+      category: categories[0],
+      groupId: group.id,
+      status: 'pending',
+    })
+  }
+
+  const handleSaveItem = async (typeKey: 'income'|'expense'|'investment') => {
+    if (isSavingItem) return
+
+    const description = String(editData.description ?? '').trim()
+    const amount = parseAmountInput(String(editData.amount ?? ''))
+    const groupId = String(editData.groupId ?? '').trim()
+    const groups = getGroupsByType(typeKey)
+    const targetGroup = groups.find((group) => group.id === groupId)
+
+    if (!description || !Number.isFinite(amount) || amount <= 0) {
+      Alert.alert('Dados incompletos', 'Informe uma descrição e um valor maior que zero.')
+      return
+    }
+
+    if (!targetGroup) {
+      Alert.alert('Grupo inválido', 'O grupo deste lançamento não existe mais. Cancele e adicione o lançamento novamente.')
+      return
+    }
+
+    const validCategories = (targetGroup.categories ?? []).map((c) => c.trim()).filter(Boolean)
+    if (validCategories.length === 0) {
+      Alert.alert('Categoria necessária', 'Cadastre pelo menos uma categoria neste grupo antes de salvar o lançamento.')
+      return
+    }
+
+    const requestedCategory = String(editData.category ?? '').trim()
+    const category = validCategories.includes(requestedCategory)
+      ? requestedCategory
+      : validCategories[0]
 
     const setState: any = typeKey === 'income' ? setIncomes : typeKey === 'expense' ? setTransactions : setInvestments
     const endpoint = typeKey === 'income' ? '/incomes' : typeKey === 'expense' ? '/transactions' : '/investments'
     const payload = {
       description,
       amount,
-      category: editData.category,
-      groupId: editData.groupId,
+      category,
+      groupId,
       month: currentMonth,
       ...(typeKey !== 'investment' ? { status: editData.status ?? 'pending' } : {}),
     }
 
+    setIsSavingItem(true)
     try {
       if (editingId === 'new') {
         const { data } = await api.post(endpoint, payload)
         setState((prev: any[]) => [...prev, data])
       } else if (editingId) {
-        // Agora a edição é persistida no banco, em vez de alterar apenas o estado local.
         const { data } = await api.put(`${endpoint}/${editingId}`, payload)
         setState((prev: any[]) => prev.map((item) => item.id === editingId ? data : item))
       }
       setEditingId(null)
       setEditData({})
-    } catch (e) {
+    } catch (e: any) {
       console.error('Erro ao salvar item:', e)
-      Alert.alert('Erro', 'Não foi possível salvar a alteração no banco de dados.')
+      const apiMessage = e?.response?.data?.error
+      Alert.alert('Erro ao salvar', apiMessage || 'Não foi possível salvar a alteração no banco de dados.')
+    } finally {
+      setIsSavingItem(false)
     }
   }
 
@@ -374,26 +427,35 @@ export default function Dashboard() {
         setEditingContributionId(null)
         setEditContributionValue('')
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('Erro ao excluir aporte:', e)
-      Alert.alert('Erro', 'Não foi possível excluir o aporte.')
+      const apiMessage = e?.response?.data?.error
+      Alert.alert('Erro ao excluir', apiMessage || 'Não foi possível excluir o aporte.')
     } finally {
       setSavingContributionId(null)
     }
   }
 
   const handleDeleteContribution = (contribution: InvestmentContribution) => {
+    const message = `Deseja excluir o aporte de ${formatCurrency(contribution.amount)}? O valor será devolvido ao saldo do mês e removido do patrimônio.`
+
+    // No React Native Web, Alert.alert não executa de forma confiável
+    // callbacks de múltiplos botões. Por isso usamos confirm() no navegador.
+    if (Platform.OS === 'web') {
+      const confirmed = typeof window !== 'undefined' ? window.confirm(message) : false
+      if (confirmed) void deleteContribution(contribution)
+      return
+    }
+
     Alert.alert(
       'Excluir aporte',
-      `Deseja excluir o aporte de ${formatCurrency(contribution.amount)}? O valor será devolvido ao saldo do mês e removido do patrimônio.`,
+      message,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Excluir',
           style: 'destructive',
-          onPress: () => {
-            void deleteContribution(contribution)
-          },
+          onPress: () => void deleteContribution(contribution),
         },
       ],
     )
@@ -411,24 +473,53 @@ export default function Dashboard() {
   }
 
   const saveEditGroup = async (groupId: string) => {
-    const categories = editGroupData.categories.split(',').map(s => s.trim()).filter(s => s);
-    const setState: any = editGroupData.type === 'income' ? setIncomeGroups : editGroupData.type === 'expense' ? setExpenseGroups : setInvestmentGroups;
-    
+    const categories = Array.from(new Set(
+      editGroupData.categories
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ))
+
+    if (!editGroupData.type) return
+
+    if (categories.length === 0) {
+      Alert.alert('Categoria necessária', 'Mantenha pelo menos uma categoria no grupo.')
+      return
+    }
+
+    const setState: any = editGroupData.type === 'income' ? setIncomeGroups : editGroupData.type === 'expense' ? setExpenseGroups : setInvestmentGroups
+
     try {
+      let savedGroup: Group
+
       if (groupId === 'new') {
-        const { data } = await api.post('/groups', { name: editGroupData.name || 'Novo Grupo', type: editGroupData.type, categories });
-        setState((prev: any) => [...prev, data]);
+        const { data } = await api.post('/groups', {
+          name: editGroupData.name || 'Novo Grupo',
+          type: editGroupData.type,
+          categories,
+        })
+        savedGroup = data
+        setState((prev: Group[]) => [...prev, data])
       } else {
         const { data } = await api.put(`/groups/${groupId}`, {
           name: editGroupData.name || 'Grupo',
           categories,
         })
+        savedGroup = data
         setState((prev: Group[]) => prev.map((g) => g.id === groupId ? data : g))
       }
-      setEditingGroupId(null);
-    } catch (e) {
-      console.error("Erro ao salvar grupo", e)
-      Alert.alert('Erro', 'Não foi possível salvar o grupo no banco de dados.')
+
+      // Se havia um lançamento em edição e sua categoria foi removida,
+      // move o rascunho para a primeira categoria ainda válida.
+      if (editData.groupId === savedGroup.id && !savedGroup.categories.includes(String(editData.category ?? ''))) {
+        setEditData((prev: any) => ({ ...prev, category: savedGroup.categories[0] }))
+      }
+
+      setEditingGroupId(null)
+    } catch (e: any) {
+      console.error('Erro ao salvar grupo', e)
+      const apiMessage = e?.response?.data?.error
+      Alert.alert('Erro', apiMessage || 'Não foi possível salvar o grupo no banco de dados.')
     }
   }
 
@@ -495,13 +586,13 @@ export default function Dashboard() {
                     <>
                       <TextInput style={[styles.input, { color: theme.text, backgroundColor: theme.inputBg, borderBottomColor: theme.primary, flex: 2 }]} value={editData.description} onChangeText={(v) => setEditData({...editData, description: v})} placeholder="Descrição" autoFocus />
                       <View style={{ flex: 1.2 }}>
-                        <TouchableOpacity style={[styles.comboboxBtn, { borderColor: theme.primary, backgroundColor: theme.inputBg }]} onPress={() => setCategoryModal({visible: true, list: group.categories, onSelect: (cat) => setEditData({...editData, category: cat})})}>
+                        <TouchableOpacity style={[styles.comboboxBtn, { borderColor: theme.primary, backgroundColor: theme.inputBg }]} onPress={() => setCategoryModal({visible: true, list: group.categories, onSelect: (cat) => setEditData((prev: any) => ({...prev, category: cat}))})}>
                           <Text style={{ color: theme.text, fontSize: 13 }} numberOfLines={1}>{editData.category || 'Selecionar...'}</Text><Text style={{ color: theme.subText, fontSize: 10 }}>▼</Text>
                         </TouchableOpacity>
                       </View>
                       <TextInput style={[styles.input, { color: theme.text, backgroundColor: theme.inputBg, borderBottomColor: theme.primary, width: 90, textAlign: 'right' }]} value={editData.amount?.toString()} onChangeText={(v) => setEditData({...editData, amount: v})} keyboardType="decimal-pad" placeholder="0.00" />
                       <View style={{ width: 85, flexDirection: 'row', justifyContent: 'center', gap: 4 }}>
-                        <TouchableOpacity style={[styles.smallBtn, { backgroundColor: theme.primary, paddingHorizontal: 8 }]} onPress={() => handleSaveItem(typeKey)}><Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>✓</Text></TouchableOpacity>
+                        <TouchableOpacity style={[styles.smallBtn, { backgroundColor: theme.primary, paddingHorizontal: 8, minWidth: 34, alignItems: 'center' }]} onPress={() => handleSaveItem(typeKey)} disabled={isSavingItem}>{isSavingItem ? <ActivityIndicator size="small" color="#fff" /> : <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>✓</Text>}</TouchableOpacity>
                         {editingId !== 'new' && (
                           <TouchableOpacity style={[styles.smallBtn, { backgroundColor: theme.danger, paddingHorizontal: 8 }]} onPress={() => handleRemoveItem(item.id, typeKey)}><Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>✕</Text></TouchableOpacity>
                         )}
@@ -541,7 +632,7 @@ export default function Dashboard() {
         })}
         
         {!isEditingGroup && editingId !== 'new' && (
-          <TouchableOpacity style={{ marginTop: 16, alignItems: 'center', paddingVertical: 8 }} onPress={() => { setEditingId('new'); setEditData({ id: 'new', description: '', amount: 0, category: group.categories[0] || 'Geral', groupId: group.id, status: 'pending' }) }}>
+          <TouchableOpacity style={{ marginTop: 16, alignItems: 'center', paddingVertical: 8 }} onPress={() => startNewItem(group, typeKey)}>
             <Text style={{ color: theme.primary, fontWeight: 'bold' }}>+ Adicionar em {group.name}</Text>
           </TouchableOpacity>
         )}
