@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Alert, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
+import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import Svg, { Circle } from 'react-native-svg'
 import { api } from '../services/api'
 
@@ -11,7 +11,12 @@ type Investment = { id: string; description: string; amount: number; category: s
 // --- Temas e Cores ---
 const darkTheme = { bg: '#121214', card: '#202024', border: '#323238', text: '#e1e1e6', subText: '#a8a8b3', primary: '#8257E5', success: '#04D361', danger: '#F75A68', info: '#00B37E', inputBg: '#121214', paidBg: 'rgba(4, 211, 97, 0.1)' }
 const lightTheme = { bg: '#F0F4F8', card: '#FFFFFF', border: '#D9E2EC', text: '#102A43', subText: '#486581', primary: '#0F609B', success: '#0A7B3E', danger: '#D94430', info: '#0284C7', inputBg: '#F8FAFC', paidBg: '#E6F4EA' }
-const MONTHS_LIST = ['Maio 2026', 'Junho 2026', 'Julho 2026', 'Agosto 2026', 'Setembro 2026', 'Outubro 2026', 'Novembro 2026']
+const MONTH_NAMES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
+const MONTHS_LIST = Array.from({ length: 25 }, (_, index) => {
+  const now = new Date()
+  const date = new Date(now.getFullYear(), now.getMonth() - 12 + index, 1)
+  return `${MONTH_NAMES[date.getMonth()]} ${date.getFullYear()}`
+})
 const CHART_COLORS = ['#8257E5', '#04D361', '#F75A68', '#00B37E', '#29B6F6', '#FBA94C', '#9C27B0', '#FFEB3B', '#E1E1E6']
 
 // --- Componente: Gráfico de Pizza (Donut) ---
@@ -52,6 +57,8 @@ export default function Dashboard() {
   const [incomes, setIncomes] = useState<Transaction[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [investments, setInvestments] = useState<Investment[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   // --- Edição ---
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -65,28 +72,40 @@ export default function Dashboard() {
   // CARREGAR DADOS DA API
   // ==========================================
   const loadData = async () => {
-    try {
-      const { data: groups } = await api.get('/groups');
-      setIncomeGroups(groups.filter((g: Group) => g.type === 'income'));
-      setExpenseGroups(groups.filter((g: Group) => g.type === 'expense'));
-      setInvestmentGroups(groups.filter((g: Group) => g.type === 'investment'));
+    setIsLoading(true)
+    setLoadError(null)
 
-      const { data: incs } = await api.get('/incomes', { params: { month: currentMonth } });
-      const { data: txs } = await api.get('/transactions', { params: { month: currentMonth } });
-      const { data: invs } = await api.get('/investments'); 
-      
-      setIncomes(incs); 
-      setTransactions(txs); 
-      setInvestments(invs);
+    try {
+      // Dispara as quatro requisições ao mesmo tempo. Isso reduz bastante
+      // o tempo total quando o servidor está acordando ou tem latência alta.
+      const [groupsResponse, incomesResponse, transactionsResponse, investmentsResponse] = await Promise.all([
+        api.get('/groups'),
+        api.get('/incomes', { params: { month: currentMonth } }),
+        api.get('/transactions', { params: { month: currentMonth } }),
+        api.get('/investments'),
+      ])
+
+      const groups: Group[] = groupsResponse.data
+      setIncomeGroups(groups.filter((g) => g.type === 'income'))
+      setExpenseGroups(groups.filter((g) => g.type === 'expense'))
+      setInvestmentGroups(groups.filter((g) => g.type === 'investment'))
+      setIncomes(incomesResponse.data)
+      setTransactions(transactionsResponse.data)
+      setInvestments(investmentsResponse.data)
     } catch (error) {
-      console.log("Modo offline ou erro de conexão com a API.");
+      console.error('Erro ao carregar dados da API:', error)
+      setLoadError('Não foi possível carregar suas informações. Verifique a conexão e tente novamente.')
+    } finally {
+      setIsLoading(false)
     }
   }
 
   useEffect(() => {
-    loadData();
-    setEditingId(null); setEditingGroupId(null); setIncrementValue('');
-  }, [currentMonth, activeTab])
+    loadData()
+    setEditingId(null)
+    setEditingGroupId(null)
+    setIncrementValue('')
+  }, [currentMonth])
 
   // --- Filtros Mês ---
   const currentIncomes = useMemo(() => incomes.filter(i => i.month === currentMonth), [incomes, currentMonth])
@@ -113,6 +132,25 @@ export default function Dashboard() {
   const pendingPercentage = totalExpenses > 0 ? (totalExpensesPending / totalExpenses) * 100 : 0;
 
   const formatCurrency = (val: number) => `R$ ${val.toFixed(2).replace('.', ',')}`
+
+  const parseAmountInput = (rawValue: string) => {
+    const cleanValue = rawValue.trim().replace(/R\$/gi, '').replace(/\s/g, '')
+    if (!cleanValue) return NaN
+
+    // Aceita 1234.56, 1234,56, 1.234,56 e 1,234.56.
+    if (cleanValue.includes(',') && cleanValue.includes('.')) {
+      const commaIsDecimal = cleanValue.lastIndexOf(',') > cleanValue.lastIndexOf('.')
+      return Number(commaIsDecimal
+        ? cleanValue.replace(/\./g, '').replace(',', '.')
+        : cleanValue.replace(/,/g, ''))
+    }
+
+    if (cleanValue.includes(',')) {
+      return Number(cleanValue.replace(/\./g, '').replace(',', '.'))
+    }
+
+    return Number(cleanValue.replace(/[^0-9.-]/g, ''))
+  }
 
   // Gráficos
   const expenseChartData = useMemo(() => {
@@ -190,34 +228,59 @@ export default function Dashboard() {
   }
 
   const handleSaveItem = async (typeKey: 'income'|'expense'|'investment') => {
-    if (!editData.description || !editData.amount) return;
-    
-    const setState: any = typeKey === 'income' ? setIncomes : typeKey === 'expense' ? setTransactions : setInvestments;
-    const endpoint = typeKey === 'income' ? '/incomes' : typeKey === 'expense' ? '/transactions' : '/investments';
-    
+    const description = String(editData.description ?? '').trim()
+    const amount = parseAmountInput(String(editData.amount ?? ''))
+
+    if (!description || !Number.isFinite(amount) || amount <= 0) {
+      Alert.alert('Valor inválido', 'Informe uma descrição e um valor maior que zero.')
+      return
+    }
+
+    const setState: any = typeKey === 'income' ? setIncomes : typeKey === 'expense' ? setTransactions : setInvestments
+    const endpoint = typeKey === 'income' ? '/incomes' : typeKey === 'expense' ? '/transactions' : '/investments'
+    const payload = {
+      description,
+      amount,
+      category: editData.category,
+      groupId: editData.groupId,
+      month: currentMonth,
+      ...(typeKey !== 'investment' ? { status: editData.status ?? 'pending' } : {}),
+    }
+
     try {
       if (editingId === 'new') {
-        const { data } = await api.post(endpoint, { ...editData, month: currentMonth });
-        setState((prev: any) => [...prev, data]);
-      } else {
-        // Num cenário real teríamos rota PUT. Aqui atualiza o estado visualmente.
-        setState((prev: any) => prev.map((item: any) => item.id === editingId ? { ...item, ...editData } : item));
+        const { data } = await api.post(endpoint, payload)
+        setState((prev: any[]) => [...prev, data])
+      } else if (editingId) {
+        // Agora a edição é persistida no banco, em vez de alterar apenas o estado local.
+        const { data } = await api.put(`${endpoint}/${editingId}`, payload)
+        setState((prev: any[]) => prev.map((item) => item.id === editingId ? data : item))
       }
-      setEditingId(null);
-    } catch (e) { console.error("Erro ao salvar", e); }
+      setEditingId(null)
+      setEditData({})
+    } catch (e) {
+      console.error('Erro ao salvar item:', e)
+      Alert.alert('Erro', 'Não foi possível salvar a alteração no banco de dados.')
+    }
   }
 
   const handleSaveAporte = async (id: string) => {
-    const val = Number(incrementValue.replace(/[^0-9.]/g, ''));
-    if (!val) { setEditingId(null); return; }
-    
+    const amount = parseAmountInput(incrementValue)
+    if (!Number.isFinite(amount) || amount <= 0) {
+      Alert.alert('Valor inválido', 'Informe um valor de aporte maior que zero.')
+      return
+    }
+
     try {
-      // Como não criamos a rota PATCH para aporte na API ainda, 
-      // vou simular visualmente. O correto seria ter um PATCH /investments/:id/aporte
-      setInvestments(prev => prev.map(inv => inv.id === id ? { ...inv, amount: inv.amount + val } : inv));
-      setEditingId(null); 
-      setIncrementValue('');
-    } catch (e) { console.error(e); }
+      // O backend incrementa o valor de forma atômica no PostgreSQL.
+      const { data } = await api.patch(`/investments/${id}/aporte`, { amount })
+      setInvestments((prev) => prev.map((inv) => inv.id === id ? data : inv))
+      setEditingId(null)
+      setIncrementValue('')
+    } catch (e) {
+      console.error('Erro ao salvar aporte:', e)
+      Alert.alert('Erro', 'O aporte não pôde ser salvo no banco de dados.')
+    }
   }
 
   const handleRemoveItem = async (id: string, typeKey: 'income'|'expense'|'investment') => {
@@ -240,10 +303,17 @@ export default function Dashboard() {
         const { data } = await api.post('/groups', { name: editGroupData.name || 'Novo Grupo', type: editGroupData.type, categories });
         setState((prev: any) => [...prev, data]);
       } else {
-        setState((prev: any) => prev.map((g: any) => g.id === groupId ? { ...g, name: editGroupData.name, categories } : g));
+        const { data } = await api.put(`/groups/${groupId}`, {
+          name: editGroupData.name || 'Grupo',
+          categories,
+        })
+        setState((prev: Group[]) => prev.map((g) => g.id === groupId ? data : g))
       }
       setEditingGroupId(null);
-    } catch (e) { console.error("Erro ao salvar grupo", e); }
+    } catch (e) {
+      console.error("Erro ao salvar grupo", e)
+      Alert.alert('Erro', 'Não foi possível salvar o grupo no banco de dados.')
+    }
   }
 
   const removeGroup = async (groupId: string, typeKey: 'income'|'expense'|'investment') => {
@@ -313,7 +383,7 @@ export default function Dashboard() {
                           <Text style={{ color: theme.text, fontSize: 13 }} numberOfLines={1}>{editData.category || 'Selecionar...'}</Text><Text style={{ color: theme.subText, fontSize: 10 }}>▼</Text>
                         </TouchableOpacity>
                       </View>
-                      <TextInput style={[styles.input, { color: theme.text, backgroundColor: theme.inputBg, borderBottomColor: theme.primary, width: 90, textAlign: 'right' }]} value={editData.amount?.toString()} onChangeText={(v) => setEditData({...editData, amount: Number(v.replace(/[^0-9.]/g, ''))})} keyboardType="numeric" placeholder="0.00" />
+                      <TextInput style={[styles.input, { color: theme.text, backgroundColor: theme.inputBg, borderBottomColor: theme.primary, width: 90, textAlign: 'right' }]} value={editData.amount?.toString()} onChangeText={(v) => setEditData({...editData, amount: v})} keyboardType="decimal-pad" placeholder="0.00" />
                       <View style={{ width: 85, flexDirection: 'row', justifyContent: 'center', gap: 4 }}>
                         <TouchableOpacity style={[styles.smallBtn, { backgroundColor: theme.primary, paddingHorizontal: 8 }]} onPress={() => handleSaveItem(typeKey)}><Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>✓</Text></TouchableOpacity>
                         {editingId !== 'new' && (
@@ -326,7 +396,7 @@ export default function Dashboard() {
                     <>
                       <Text style={{ color: theme.text, flex: 2, fontSize: 15 }} numberOfLines={1}>{item.description}</Text>
                       <Text style={{ color: theme.subText, flex: 1.2, fontSize: 13 }} numberOfLines={1}>{item.category}</Text>
-                      <TextInput style={[styles.input, { color: theme.info, backgroundColor: theme.inputBg, borderBottomColor: theme.info, width: 90, textAlign: 'right', fontWeight: 'bold' }]} value={incrementValue} onChangeText={setIncrementValue} keyboardType="numeric" placeholder="+ Aporte" placeholderTextColor={theme.info} autoFocus />
+                      <TextInput style={[styles.input, { color: theme.info, backgroundColor: theme.inputBg, borderBottomColor: theme.info, width: 90, textAlign: 'right', fontWeight: 'bold' }]} value={incrementValue} onChangeText={setIncrementValue} keyboardType="decimal-pad" placeholder="+ Aporte" placeholderTextColor={theme.info} autoFocus />
                       <View style={{ width: 85, flexDirection: 'row', justifyContent: 'center', gap: 4 }}>
                         <TouchableOpacity style={[styles.smallBtn, { backgroundColor: theme.info, paddingHorizontal: 8 }]} onPress={() => handleSaveAporte(item.id)}><Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>✓</Text></TouchableOpacity>
                         <TouchableOpacity style={[styles.smallBtn, { backgroundColor: theme.danger, paddingHorizontal: 8 }]} onPress={() => { setEditingId(null); setIncrementValue(''); }}><Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>✕</Text></TouchableOpacity>
@@ -359,6 +429,32 @@ export default function Dashboard() {
             <Text style={{ color: theme.primary, fontWeight: 'bold' }}>+ Adicionar em {group.name}</Text>
           </TouchableOpacity>
         )}
+      </View>
+    )
+  }
+
+  if (isLoading) {
+    return (
+      <View style={[styles.loadingContainer, { backgroundColor: theme.bg }]}>
+        <ActivityIndicator size="large" color={theme.primary} />
+        <Text style={[styles.loadingTitle, { color: theme.text }]}>Carregando suas finanças...</Text>
+        <Text style={[styles.loadingSubtitle, { color: theme.subText }]}>O primeiro acesso pode levar alguns segundos.</Text>
+      </View>
+    )
+  }
+
+  if (loadError) {
+    return (
+      <View style={[styles.loadingContainer, { backgroundColor: theme.bg }]}>
+        <Text style={{ color: theme.danger, fontSize: 32, marginBottom: 12 }}>!</Text>
+        <Text style={[styles.loadingTitle, { color: theme.text }]}>Falha ao carregar</Text>
+        <Text style={[styles.loadingSubtitle, { color: theme.subText }]}>{loadError}</Text>
+        <TouchableOpacity
+          style={[styles.retryButton, { backgroundColor: theme.primary }]}
+          onPress={loadData}
+        >
+          <Text style={{ color: '#fff', fontWeight: 'bold' }}>Tentar novamente</Text>
+        </TouchableOpacity>
       </View>
     )
   }
@@ -497,4 +593,8 @@ const styles = StyleSheet.create({
   input: { paddingVertical: 6, paddingHorizontal: 8, borderBottomWidth: 1, fontSize: 15 }, comboboxBtn: { paddingVertical: 6, paddingHorizontal: 8, borderWidth: 1, borderRadius: 4, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, categoryBadge: { alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 },
   actionButton: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, width: '100%', alignItems: 'center' }, smallBtn: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 16 }, modalContent: { width: '100%', maxWidth: 400, borderWidth: 1, borderRadius: 12, padding: 24 },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  loadingTitle: { marginTop: 16, fontSize: 18, fontWeight: 'bold', textAlign: 'center' },
+  loadingSubtitle: { marginTop: 8, fontSize: 14, textAlign: 'center', maxWidth: 360 },
+  retryButton: { marginTop: 20, paddingVertical: 12, paddingHorizontal: 20, borderRadius: 8 },
 })

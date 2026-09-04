@@ -1,6 +1,10 @@
 import axios from 'axios';
 
 export const api = axios.create({
-  // URL do nosso backend local (quando formos para a nuvem, mudaremos apenas aqui)
-  baseURL: 'https://finances-api-jyfj.onrender.com', 
+  // Em produção, prefira EXPO_PUBLIC_API_URL no .env.
+  baseURL: process.env.EXPO_PUBLIC_API_URL ?? 'https://finances-api-jyfj.onrender.com',
+  timeout: 60000,
+  headers: {
+    'Content-Type': 'application/json',
+  },
 });
