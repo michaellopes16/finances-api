@@ -358,6 +358,89 @@ app.patch('/investments/:id/aporte', asyncHandler(async (req, res) => {
   res.json(updatedInv);
 }));
 
+
+/**
+ * Corrige o valor de um aporte já registrado.
+ * O patrimônio é ajustado apenas pela diferença entre o valor antigo e o novo.
+ */
+app.put('/investment-contributions/:id', asyncHandler(async (req, res) => {
+  const amount = parsePositiveAmount(req.body.amount);
+
+  if (amount === null) {
+    res.status(400).json({ error: 'O valor do aporte deve ser maior que zero.' });
+    return;
+  }
+
+  const existingContribution = await prisma.investmentContribution.findUnique({
+    where: { id: req.params.id },
+    select: {
+      id: true,
+      amount: true,
+      investmentId: true,
+    },
+  });
+
+  if (!existingContribution) {
+    res.status(404).json({ error: 'Aporte não encontrado.' });
+    return;
+  }
+
+  const delta = amount - existingContribution.amount;
+
+  const updatedInvestment = await prisma.$transaction(async (tx) => {
+    await tx.investmentContribution.update({
+      where: { id: existingContribution.id },
+      data: { amount },
+    });
+
+    return tx.investment.update({
+      where: { id: existingContribution.investmentId },
+      data: {
+        amount: { increment: delta },
+      },
+      include: investmentInclude,
+    });
+  });
+
+  res.json(updatedInvestment);
+}));
+
+/**
+ * Exclui um aporte e remove o mesmo valor do patrimônio acumulado.
+ * O saldo do mês é recalculado pelo frontend a partir do histórico restante.
+ */
+app.delete('/investment-contributions/:id', asyncHandler(async (req, res) => {
+  const existingContribution = await prisma.investmentContribution.findUnique({
+    where: { id: req.params.id },
+    select: {
+      id: true,
+      amount: true,
+      investmentId: true,
+    },
+  });
+
+  if (!existingContribution) {
+    res.status(404).json({ error: 'Aporte não encontrado.' });
+    return;
+  }
+
+  const updatedInvestment = await prisma.$transaction(async (tx) => {
+    await tx.investmentContribution.delete({
+      where: { id: existingContribution.id },
+    });
+
+    return tx.investment.update({
+      where: { id: existingContribution.investmentId },
+      data: {
+        amount: { decrement: existingContribution.amount },
+      },
+      include: investmentInclude,
+    });
+  });
+
+  res.json(updatedInvestment);
+}));
+
 /**
  * Histórico completo ou filtrado por mês.
  * Ex.: GET /investment-contributions?month=Setembro%202026

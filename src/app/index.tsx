@@ -65,6 +65,11 @@ export default function Dashboard() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editData, setEditData] = useState<Partial<any>>({})
   const [incrementValue, setIncrementValue] = useState<string>('')
+
+  // --- Edição de aportes ---
+  const [editingContributionId, setEditingContributionId] = useState<string | null>(null)
+  const [editContributionValue, setEditContributionValue] = useState<string>('')
+  const [savingContributionId, setSavingContributionId] = useState<string | null>(null)
   
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null)
   const [editGroupData, setEditGroupData] = useState<{name: string, categories: string, type: 'income'|'expense'|'investment'|null}>({name: '', categories: '', type: null})
@@ -106,6 +111,8 @@ export default function Dashboard() {
     setEditingId(null)
     setEditingGroupId(null)
     setIncrementValue('')
+    setEditingContributionId(null)
+    setEditContributionValue('')
   }, [currentMonth])
 
   // --- Filtros Mês ---
@@ -304,6 +311,92 @@ export default function Dashboard() {
       console.error('Erro ao salvar aporte:', e)
       Alert.alert('Erro', 'O aporte não pôde ser salvo no banco de dados.')
     }
+  }
+
+
+  const handleStartEditContribution = (contribution: InvestmentContribution) => {
+    setEditingContributionId(contribution.id)
+    setEditContributionValue(String(contribution.amount).replace('.', ','))
+  }
+
+  const handleCancelEditContribution = () => {
+    setEditingContributionId(null)
+    setEditContributionValue('')
+  }
+
+  const handleSaveContribution = async (contribution: InvestmentContribution) => {
+    const amount = parseAmountInput(editContributionValue)
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      Alert.alert('Valor inválido', 'Informe um valor de aporte maior que zero.')
+      return
+    }
+
+    setSavingContributionId(contribution.id)
+
+    try {
+      const { data: updatedInvestment } = await api.put(
+        `/investment-contributions/${contribution.id}`,
+        { amount },
+      )
+
+      setInvestments((prev) =>
+        prev.map((investment) =>
+          investment.id === updatedInvestment.id ? updatedInvestment : investment,
+        ),
+      )
+
+      setEditingContributionId(null)
+      setEditContributionValue('')
+    } catch (e) {
+      console.error('Erro ao editar aporte:', e)
+      Alert.alert('Erro', 'Não foi possível editar o aporte.')
+    } finally {
+      setSavingContributionId(null)
+    }
+  }
+
+  const deleteContribution = async (contribution: InvestmentContribution) => {
+    setSavingContributionId(contribution.id)
+
+    try {
+      const { data: updatedInvestment } = await api.delete(
+        `/investment-contributions/${contribution.id}`,
+      )
+
+      setInvestments((prev) =>
+        prev.map((investment) =>
+          investment.id === updatedInvestment.id ? updatedInvestment : investment,
+        ),
+      )
+
+      if (editingContributionId === contribution.id) {
+        setEditingContributionId(null)
+        setEditContributionValue('')
+      }
+    } catch (e) {
+      console.error('Erro ao excluir aporte:', e)
+      Alert.alert('Erro', 'Não foi possível excluir o aporte.')
+    } finally {
+      setSavingContributionId(null)
+    }
+  }
+
+  const handleDeleteContribution = (contribution: InvestmentContribution) => {
+    Alert.alert(
+      'Excluir aporte',
+      `Deseja excluir o aporte de ${formatCurrency(contribution.amount)}? O valor será devolvido ao saldo do mês e removido do patrimônio.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Excluir',
+          style: 'destructive',
+          onPress: () => {
+            void deleteContribution(contribution)
+          },
+        },
+      ],
+    )
   }
 
   const handleRemoveItem = async (id: string, typeKey: 'income'|'expense'|'investment') => {
@@ -611,15 +704,84 @@ export default function Dashboard() {
                     <Text style={{ color: theme.subText, textAlign: 'center' }}>Nenhum aporte registrado neste mês.</Text>
                   </View>
                 ) : (
-                  monthlyInvestmentHistory.map((contribution) => (
-                    <View key={contribution.id} style={[styles.contributionRow, { borderBottomColor: theme.border }]}>
-                      <View style={{ flex: 1, paddingRight: 12 }}>
-                        <Text style={{ color: theme.text, fontSize: 14, fontWeight: '600' }}>{contribution.investmentDescription}</Text>
-                        <Text style={{ color: theme.subText, fontSize: 12, marginTop: 3 }}>{contribution.investmentCategory}{contribution.note ? ` • ${contribution.note}` : ''}</Text>
+                  monthlyInvestmentHistory.map((contribution) => {
+                    const isEditingContribution = editingContributionId === contribution.id
+                    const isSavingContribution = savingContributionId === contribution.id
+
+                    return (
+                      <View key={contribution.id} style={[styles.contributionRow, { borderBottomColor: theme.border }]}>
+                        <View style={{ flex: 1, paddingRight: 12 }}>
+                          <Text style={{ color: theme.text, fontSize: 14, fontWeight: '600' }}>{contribution.investmentDescription}</Text>
+                          <Text style={{ color: theme.subText, fontSize: 12, marginTop: 3 }}>{contribution.investmentCategory}{contribution.note ? ` • ${contribution.note}` : ''}</Text>
+                        </View>
+
+                        {isEditingContribution ? (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <TextInput
+                              style={[
+                                styles.input,
+                                {
+                                  color: theme.text,
+                                  backgroundColor: theme.inputBg,
+                                  borderBottomColor: theme.primary,
+                                  width: 105,
+                                  textAlign: 'right',
+                                  paddingVertical: 6,
+                                },
+                              ]}
+                              value={editContributionValue}
+                              onChangeText={setEditContributionValue}
+                              keyboardType="decimal-pad"
+                              placeholder="0,00"
+                              placeholderTextColor={theme.subText}
+                              autoFocus
+                              editable={!isSavingContribution}
+                            />
+
+                            <TouchableOpacity
+                              style={[styles.smallBtn, { backgroundColor: theme.success, paddingHorizontal: 9 }]}
+                              onPress={() => handleSaveContribution(contribution)}
+                              disabled={isSavingContribution}
+                            >
+                              {isSavingContribution
+                                ? <ActivityIndicator size="small" color="#fff" />
+                                : <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>✓</Text>}
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={[styles.smallBtn, { backgroundColor: theme.border, paddingHorizontal: 9 }]}
+                              onPress={handleCancelEditContribution}
+                              disabled={isSavingContribution}
+                            >
+                              <Text style={{ color: theme.text, fontSize: 12, fontWeight: 'bold' }}>✕</Text>
+                            </TouchableOpacity>
+                          </View>
+                        ) : (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <Text style={{ color: theme.info, fontSize: 15, fontWeight: 'bold' }}>- {formatCurrency(contribution.amount)}</Text>
+
+                            <TouchableOpacity
+                              style={[styles.contributionActionButton, { borderColor: theme.primary }]}
+                              onPress={() => handleStartEditContribution(contribution)}
+                              disabled={isSavingContribution}
+                            >
+                              <Text style={{ color: theme.primary, fontSize: 13, fontWeight: 'bold' }}>✎</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={[styles.contributionActionButton, { borderColor: theme.danger }]}
+                              onPress={() => handleDeleteContribution(contribution)}
+                              disabled={isSavingContribution}
+                            >
+                              {isSavingContribution
+                                ? <ActivityIndicator size="small" color={theme.danger} />
+                                : <Text style={{ color: theme.danger, fontSize: 13, fontWeight: 'bold' }}>🗑</Text>}
+                            </TouchableOpacity>
+                          </View>
+                        )}
                       </View>
-                      <Text style={{ color: theme.info, fontSize: 15, fontWeight: 'bold' }}>- {formatCurrency(contribution.amount)}</Text>
-                    </View>
-                  ))
+                    )
+                  })
                 )}
 
                 <View style={{ padding: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -666,4 +828,5 @@ const styles = StyleSheet.create({
   retryButton: { marginTop: 20, paddingVertical: 12, paddingHorizontal: 20, borderRadius: 8 },
   investmentMetric: { minWidth: 175, flexGrow: 1, padding: 12, borderWidth: 1, borderRadius: 8 },
   contributionRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 16, borderBottomWidth: 1 },
+  contributionActionButton: { width: 30, height: 30, borderRadius: 7, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
 })
