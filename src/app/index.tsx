@@ -66,6 +66,7 @@ export default function Dashboard() {
   const [editData, setEditData] = useState<Partial<any>>({})
   const [incrementValue, setIncrementValue] = useState<string>('')
   const [isSavingItem, setIsSavingItem] = useState(false)
+  const [itemFormError, setItemFormError] = useState<string | null>(null)
 
   // --- Edição de aportes ---
   const [editingContributionId, setEditingContributionId] = useState<string | null>(null)
@@ -74,6 +75,17 @@ export default function Dashboard() {
   
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null)
   const [editGroupData, setEditGroupData] = useState<{name: string, categories: string, type: 'income'|'expense'|'investment'|null}>({name: '', categories: '', type: null})
+
+  // Alert.alert pode não aparecer de forma confiável no React Native Web.
+  // Centralizamos mensagens simples para garantir feedback também no navegador.
+  const notifyUser = (title: string, message: string) => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.alert(`${title}\n\n${message}`)
+      return
+    }
+
+    Alert.alert(title, message)
+  }
 
   // ==========================================
   // CARREGAR DADOS DA API
@@ -114,6 +126,7 @@ export default function Dashboard() {
     setIncrementValue('')
     setEditingContributionId(null)
     setEditContributionValue('')
+    setItemFormError(null)
   }, [currentMonth])
 
   // --- Filtros Mês ---
@@ -264,13 +277,14 @@ export default function Dashboard() {
     const categories = (group.categories ?? []).map((c) => c.trim()).filter(Boolean)
 
     if (categories.length === 0) {
-      Alert.alert(
+      notifyUser(
         'Categoria necessária',
         'Este grupo não possui categorias. Edite o grupo e cadastre pelo menos uma categoria antes de adicionar um lançamento.',
       )
       return
     }
 
+    setItemFormError(null)
     setEditingId('new')
     setEditData({
       id: 'new',
@@ -291,19 +305,32 @@ export default function Dashboard() {
     const groups = getGroupsByType(typeKey)
     const targetGroup = groups.find((group) => group.id === groupId)
 
-    if (!description || !Number.isFinite(amount) || amount <= 0) {
-      Alert.alert('Dados incompletos', 'Informe uma descrição e um valor maior que zero.')
+    if (!description) {
+      const message = 'Preencha o campo Descrição antes de salvar.'
+      setItemFormError(message)
+      notifyUser('Descrição obrigatória', message)
+      return
+    }
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      const message = 'Informe um valor maior que zero.'
+      setItemFormError(message)
+      notifyUser('Valor inválido', message)
       return
     }
 
     if (!targetGroup) {
-      Alert.alert('Grupo inválido', 'O grupo deste lançamento não existe mais. Cancele e adicione o lançamento novamente.')
+      const message = 'O grupo deste lançamento não existe mais. Cancele e adicione o lançamento novamente.'
+      setItemFormError(message)
+      notifyUser('Grupo inválido', message)
       return
     }
 
     const validCategories = (targetGroup.categories ?? []).map((c) => c.trim()).filter(Boolean)
     if (validCategories.length === 0) {
-      Alert.alert('Categoria necessária', 'Cadastre pelo menos uma categoria neste grupo antes de salvar o lançamento.')
+      const message = 'Cadastre pelo menos uma categoria neste grupo antes de salvar o lançamento.'
+      setItemFormError(message)
+      notifyUser('Categoria necessária', message)
       return
     }
 
@@ -334,10 +361,13 @@ export default function Dashboard() {
       }
       setEditingId(null)
       setEditData({})
+      setItemFormError(null)
     } catch (e: any) {
       console.error('Erro ao salvar item:', e)
       const apiMessage = e?.response?.data?.error
-      Alert.alert('Erro ao salvar', apiMessage || 'Não foi possível salvar a alteração no banco de dados.')
+      const message = apiMessage || 'Não foi possível salvar a alteração no banco de dados.'
+      setItemFormError(message)
+      notifyUser('Erro ao salvar', message)
     } finally {
       setIsSavingItem(false)
     }
@@ -346,7 +376,7 @@ export default function Dashboard() {
   const handleSaveAporte = async (id: string) => {
     const amount = parseAmountInput(incrementValue)
     if (!Number.isFinite(amount) || amount <= 0) {
-      Alert.alert('Valor inválido', 'Informe um valor de aporte maior que zero.')
+      notifyUser('Valor inválido', 'Informe um valor de aporte maior que zero.')
       return
     }
 
@@ -362,7 +392,7 @@ export default function Dashboard() {
       setIncrementValue('')
     } catch (e) {
       console.error('Erro ao salvar aporte:', e)
-      Alert.alert('Erro', 'O aporte não pôde ser salvo no banco de dados.')
+      notifyUser('Erro', 'O aporte não pôde ser salvo no banco de dados.')
     }
   }
 
@@ -381,7 +411,7 @@ export default function Dashboard() {
     const amount = parseAmountInput(editContributionValue)
 
     if (!Number.isFinite(amount) || amount <= 0) {
-      Alert.alert('Valor inválido', 'Informe um valor de aporte maior que zero.')
+      notifyUser('Valor inválido', 'Informe um valor de aporte maior que zero.')
       return
     }
 
@@ -403,7 +433,7 @@ export default function Dashboard() {
       setEditContributionValue('')
     } catch (e) {
       console.error('Erro ao editar aporte:', e)
-      Alert.alert('Erro', 'Não foi possível editar o aporte.')
+      notifyUser('Erro', 'Não foi possível editar o aporte.')
     } finally {
       setSavingContributionId(null)
     }
@@ -430,7 +460,7 @@ export default function Dashboard() {
     } catch (e: any) {
       console.error('Erro ao excluir aporte:', e)
       const apiMessage = e?.response?.data?.error
-      Alert.alert('Erro ao excluir', apiMessage || 'Não foi possível excluir o aporte.')
+      notifyUser('Erro ao excluir', apiMessage || 'Não foi possível excluir o aporte.')
     } finally {
       setSavingContributionId(null)
     }
@@ -574,6 +604,12 @@ export default function Dashboard() {
           </View>
         )}
 
+        {!isEditingGroup && editingId === 'new' && editData.groupId === group.id && itemFormError && (
+          <View style={{ paddingHorizontal: 16, paddingVertical: 10, backgroundColor: isDark ? 'rgba(247,90,104,0.10)' : '#FFF1F2', borderBottomWidth: 1, borderBottomColor: theme.danger }}>
+            <Text style={{ color: theme.danger, fontSize: 13, fontWeight: '600' }}>⚠ {itemFormError}</Text>
+          </View>
+        )}
+
         {!isEditingGroup && list.map((item: any) => {
           const isEditing = editingId === item.id;
           const isPaid = (typeKey !== 'investment') ? (item.status === 'paid' && !isEditing) : false;
@@ -584,13 +620,13 @@ export default function Dashboard() {
                 <View style={{ flex: 1, paddingVertical: 6, flexDirection: 'row', gap: 12, alignItems: 'center' }}>
                   {(editingId === 'new' || typeKey !== 'investment') ? (
                     <>
-                      <TextInput style={[styles.input, { color: theme.text, backgroundColor: theme.inputBg, borderBottomColor: theme.primary, flex: 2 }]} value={editData.description} onChangeText={(v) => setEditData({...editData, description: v})} placeholder="Descrição" autoFocus />
+                      <TextInput style={[styles.input, { color: theme.text, backgroundColor: theme.inputBg, borderBottomColor: itemFormError && !String(editData.description ?? '').trim() ? theme.danger : theme.primary, flex: 2 }]} value={editData.description} onChangeText={(v) => { setEditData({...editData, description: v}); setItemFormError(null) }} placeholder="Descrição *" placeholderTextColor={theme.subText} autoFocus />
                       <View style={{ flex: 1.2 }}>
-                        <TouchableOpacity style={[styles.comboboxBtn, { borderColor: theme.primary, backgroundColor: theme.inputBg }]} onPress={() => setCategoryModal({visible: true, list: group.categories, onSelect: (cat) => setEditData((prev: any) => ({...prev, category: cat}))})}>
+                        <TouchableOpacity style={[styles.comboboxBtn, { borderColor: theme.primary, backgroundColor: theme.inputBg }]} onPress={() => setCategoryModal({visible: true, list: group.categories, onSelect: (cat) => { setEditData((prev: any) => ({...prev, category: cat})); setItemFormError(null) }})}>
                           <Text style={{ color: theme.text, fontSize: 13 }} numberOfLines={1}>{editData.category || 'Selecionar...'}</Text><Text style={{ color: theme.subText, fontSize: 10 }}>▼</Text>
                         </TouchableOpacity>
                       </View>
-                      <TextInput style={[styles.input, { color: theme.text, backgroundColor: theme.inputBg, borderBottomColor: theme.primary, width: 90, textAlign: 'right' }]} value={editData.amount?.toString()} onChangeText={(v) => setEditData({...editData, amount: v})} keyboardType="decimal-pad" placeholder="0.00" />
+                      <TextInput style={[styles.input, { color: theme.text, backgroundColor: theme.inputBg, borderBottomColor: theme.primary, width: 90, textAlign: 'right' }]} value={editData.amount?.toString()} onChangeText={(v) => { setEditData({...editData, amount: v}); setItemFormError(null) }} keyboardType="decimal-pad" placeholder="Valor *" placeholderTextColor={theme.subText} />
                       <View style={{ width: 85, flexDirection: 'row', justifyContent: 'center', gap: 4 }}>
                         <TouchableOpacity style={[styles.smallBtn, { backgroundColor: theme.primary, paddingHorizontal: 8, minWidth: 34, alignItems: 'center' }]} onPress={() => handleSaveItem(typeKey)} disabled={isSavingItem}>{isSavingItem ? <ActivityIndicator size="small" color="#fff" /> : <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>✓</Text>}</TouchableOpacity>
                         {editingId !== 'new' && (
