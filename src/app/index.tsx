@@ -6,7 +6,8 @@ import { api } from '../services/api'
 // --- Tipagens ---
 type Group = { id: string; name: string; categories: string[]; type: string; }
 type Transaction = { id: string; description: string; amount: number; category: string; groupId: string; month: string; status: 'paid' | 'pending'; }
-type Investment = { id: string; description: string; amount: number; category: string; groupId: string; month: string; }
+type InvestmentContribution = { id: string; amount: number; month: string; note?: string | null; investmentId: string; createdAt: string; updatedAt: string; }
+type Investment = { id: string; description: string; amount: number; category: string; groupId: string; month: string; historyInitialized: boolean; contributions: InvestmentContribution[]; }
 
 // --- Temas e Cores ---
 const darkTheme = { bg: '#121214', card: '#202024', border: '#323238', text: '#e1e1e6', subText: '#a8a8b3', primary: '#8257E5', success: '#04D361', danger: '#F75A68', info: '#00B37E', inputBg: '#121214', paidBg: 'rgba(4, 211, 97, 0.1)' }
@@ -123,8 +124,26 @@ export default function Dashboard() {
   }, [currentTransactions]);
 
   const totalExpenses = totalExpensesPaid + totalExpensesPending;
-  const totalInvestedThisMonth = investments.filter(i => i.month === currentMonth).reduce((acc, curr) => acc + curr.amount, 0); 
-  
+
+  // Cada aporte possui seu próprio mês. Isso separa o patrimônio acumulado
+  // do dinheiro efetivamente investido no mês selecionado.
+  const monthlyInvestmentHistory = useMemo(() => {
+    return investments
+      .flatMap((investment) =>
+        (investment.contributions ?? [])
+          .filter((contribution) => contribution.month === currentMonth)
+          .map((contribution) => ({
+            ...contribution,
+            investmentDescription: investment.description,
+            investmentCategory: investment.category,
+          })),
+      )
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+  }, [investments, currentMonth])
+
+  const totalInvestedThisMonth = monthlyInvestmentHistory.reduce((acc, contribution) => acc + contribution.amount, 0);
+
+  // O saldo restante considera também todos os aportes feitos no mês atual.
   const balance = totalIncome - totalExpenses - totalInvestedThisMonth;
   const totalPatrimony = investments.reduce((acc, curr) => acc + curr.amount, 0);
 
@@ -272,8 +291,12 @@ export default function Dashboard() {
     }
 
     try {
-      // O backend incrementa o valor de forma atômica no PostgreSQL.
-      const { data } = await api.patch(`/investments/${id}/aporte`, { amount })
+      // O backend salva o aporte no histórico do mês selecionado e
+      // incrementa o patrimônio acumulado de forma atômica no PostgreSQL.
+      const { data } = await api.patch(`/investments/${id}/aporte`, {
+        amount,
+        month: currentMonth,
+      })
       setInvestments((prev) => prev.map((inv) => inv.id === id ? data : inv))
       setEditingId(null)
       setIncrementValue('')
@@ -554,13 +577,57 @@ export default function Dashboard() {
 
           {activeTab === 'investments' && (
             <View>
-               <View style={[styles.cardBase, { padding: 20, marginBottom: 24, backgroundColor: theme.card, borderColor: theme.border, flexDirection: 'row', flexWrap: 'wrap', gap: 24 }]}>
-                <View style={{ flex: 1, minWidth: 250, justifyContent: 'center' }}><Text style={{ color: theme.text, fontSize: 16, fontWeight: 'bold', marginBottom: 4 }}>Carteira Global</Text><Text style={{ color: theme.subText, fontSize: 14 }}>Visão acumulativa por categoria.</Text></View>
+              <View style={[styles.cardBase, { padding: 20, marginBottom: 24, backgroundColor: theme.card, borderColor: theme.border, flexDirection: 'row', flexWrap: 'wrap', gap: 24 }]}>
+                <View style={{ flex: 1, minWidth: 250, justifyContent: 'center' }}>
+                  <Text style={{ color: theme.text, fontSize: 16, fontWeight: 'bold', marginBottom: 4 }}>Carteira Global</Text>
+                  <Text style={{ color: theme.subText, fontSize: 14, marginBottom: 14 }}>Visão acumulativa por categoria.</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                    <View style={[styles.investmentMetric, { backgroundColor: theme.inputBg, borderColor: theme.border }]}>
+                      <Text style={{ color: theme.subText, fontSize: 11, fontWeight: 'bold' }}>PATRIMÔNIO</Text>
+                      <Text style={{ color: theme.info, fontSize: 18, fontWeight: 'bold', marginTop: 4 }}>{formatCurrency(totalPatrimony)}</Text>
+                    </View>
+                    <View style={[styles.investmentMetric, { backgroundColor: theme.inputBg, borderColor: theme.border }]}>
+                      <Text style={{ color: theme.subText, fontSize: 11, fontWeight: 'bold' }}>APORTADO EM {currentMonth.toUpperCase()}</Text>
+                      <Text style={{ color: theme.primary, fontSize: 18, fontWeight: 'bold', marginTop: 4 }}>{formatCurrency(totalInvestedThisMonth)}</Text>
+                    </View>
+                  </View>
+                </View>
                 <View style={{ flex: 1, minWidth: 250, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 16 }}>
                    <DonutChart data={investmentChartData} size={110} strokeWidth={16} />
                    <View style={{ justifyContent: 'center' }}>{investmentChartData.slice(0,4).map((d, i) => (<View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}><View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: d.color }} /><Text style={{ color: theme.text, fontSize: 12 }} numberOfLines={1}>{d.name}</Text></View>))}</View>
                 </View>
               </View>
+
+              <View style={[styles.cardBase, { marginBottom: 24, backgroundColor: theme.card, borderColor: theme.border }]}>
+                <View style={{ padding: 16, borderBottomWidth: 1, borderBottomColor: theme.border }}>
+                  <Text style={{ color: theme.text, fontSize: 16, fontWeight: 'bold' }}>Aportes de {currentMonth}</Text>
+                  <Text style={{ color: theme.subText, fontSize: 13, marginTop: 4 }}>
+                    Estes valores são descontados do saldo restante deste mês.
+                  </Text>
+                </View>
+
+                {monthlyInvestmentHistory.length === 0 ? (
+                  <View style={{ padding: 20, alignItems: 'center' }}>
+                    <Text style={{ color: theme.subText, textAlign: 'center' }}>Nenhum aporte registrado neste mês.</Text>
+                  </View>
+                ) : (
+                  monthlyInvestmentHistory.map((contribution) => (
+                    <View key={contribution.id} style={[styles.contributionRow, { borderBottomColor: theme.border }]}>
+                      <View style={{ flex: 1, paddingRight: 12 }}>
+                        <Text style={{ color: theme.text, fontSize: 14, fontWeight: '600' }}>{contribution.investmentDescription}</Text>
+                        <Text style={{ color: theme.subText, fontSize: 12, marginTop: 3 }}>{contribution.investmentCategory}{contribution.note ? ` • ${contribution.note}` : ''}</Text>
+                      </View>
+                      <Text style={{ color: theme.info, fontSize: 15, fontWeight: 'bold' }}>- {formatCurrency(contribution.amount)}</Text>
+                    </View>
+                  ))
+                )}
+
+                <View style={{ padding: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={{ color: theme.subText, fontSize: 13, fontWeight: 'bold' }}>TOTAL APORTADO NO MÊS</Text>
+                  <Text style={{ color: theme.primary, fontSize: 16, fontWeight: 'bold' }}>{formatCurrency(totalInvestedThisMonth)}</Text>
+                </View>
+              </View>
+
               {investmentGroups.map(group => renderGroup(group, 'investment'))}
               {editingGroupId === 'new' && editGroupData.type === 'investment' && renderGroup({ id: 'new', name: '', categories: [], type: 'investment' }, 'investment')}
               <TouchableOpacity style={[styles.cardBase, { padding: 16, alignItems: 'center', borderColor: theme.primary, borderStyle: 'dashed' }]} onPress={() => { setEditingGroupId('new'); setEditGroupData({ name: '', categories: 'Geral', type: 'investment' }); }}><Text style={{ color: theme.primary, fontWeight: 'bold' }}>+ Novo Grupo de Investimentos</Text></TouchableOpacity>
@@ -597,4 +664,6 @@ const styles = StyleSheet.create({
   loadingTitle: { marginTop: 16, fontSize: 18, fontWeight: 'bold', textAlign: 'center' },
   loadingSubtitle: { marginTop: 8, fontSize: 14, textAlign: 'center', maxWidth: 360 },
   retryButton: { marginTop: 20, paddingVertical: 12, paddingHorizontal: 20, borderRadius: 8 },
+  investmentMetric: { minWidth: 175, flexGrow: 1, padding: 12, borderWidth: 1, borderRadius: 8 },
+  contributionRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 16, borderBottomWidth: 1 },
 })

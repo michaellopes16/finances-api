@@ -9,8 +9,8 @@ datasource db {
 model Group {
   id           String        @id @default(uuid())
   name         String
-  type         String        // "expense" ou "investment"
-  categories   String[]      // Lista de categorias (array de strings nativo do PostgreSQL)
+  type         String        // "income", "expense" ou "investment"
+  categories   String[]
   transactions Transaction[]
   investments  Investment[]
 }
@@ -20,9 +20,9 @@ model Transaction {
   description String
   amount      Float
   category    String
-  month       String   // ex: "Agosto 2026"
+  month       String   // ex: "Setembro 2026"
   status      String   // "paid" ou "pending"
-  
+
   groupId     String
   group       Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
 
@@ -31,15 +31,44 @@ model Transaction {
 }
 
 model Investment {
-  id          String   @id @default(uuid())
-  description String
-  amount      Float
-  category    String
-  month       String   // ex: "Agosto 2026"
-  
-  groupId     String
-  group       Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  id                 String                   @id @default(uuid())
+  description        String
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  // Patrimônio acumulado deste investimento.
+  // Novos aportes incrementam este campo.
+  amount             Float
+
+  category           String
+
+  // Mantido para compatibilidade com os investimentos já cadastrados.
+  // Para novos cálculos mensais, a fonte correta é InvestmentContribution.month.
+  month              String
+
+  // Permite migrar automaticamente os investimentos antigos para o histórico
+  // de aportes sem duplicar o saldo inicial.
+  historyInitialized Boolean                  @default(false)
+
+  groupId            String
+  group              Group                    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  contributions      InvestmentContribution[]
+
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+}
+
+model InvestmentContribution {
+  id           String     @id @default(uuid())
+  amount       Float
+  month        String     // mês em que o dinheiro saiu do saldo disponível
+  note         String?
+
+  investmentId String
+  investment   Investment @relation(fields: [investmentId], references: [id], onDelete: Cascade)
+
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([month])
+  @@index([investmentId])
 }

@@ -30,6 +30,64 @@ const parsePositiveAmount = (value: unknown) => {
   return Number.isFinite(amount) && amount > 0 ? amount : null;
 };
 
+const parseRequiredText = (value: unknown) => {
+  const text = String(value ?? '').trim();
+  return text.length > 0 ? text : null;
+};
+
+const investmentInclude = {
+  contributions: {
+    orderBy: { createdAt: 'desc' as const },
+  },
+};
+
+/**
+ * Migração de compatibilidade para os investimentos que já existiam antes
+ * da criação de InvestmentContribution.
+ *
+ * Cada investimento legado recebe exatamente um aporte inicial, usando o
+ * amount e o month já armazenados. O historyInitialized evita duplicação.
+ */
+const ensureLegacyInvestmentHistory = async () => {
+  const legacyInvestments = await prisma.investment.findMany({
+    where: { historyInitialized: false },
+    select: {
+      id: true,
+      amount: true,
+      month: true,
+    },
+  });
+
+  for (const investment of legacyInvestments) {
+    await prisma.$transaction(async (tx) => {
+      // "Reivindica" a inicialização deste investimento. Se outra requisição
+      // já tiver feito isso, count será 0 e nenhum aporte será duplicado.
+      const claimed = await tx.investment.updateMany({
+        where: {
+          id: investment.id,
+          historyInitialized: false,
+        },
+        data: {
+          historyInitialized: true,
+        },
+      });
+
+      if (claimed.count === 0) return;
+
+      if (investment.amount > 0 && investment.month) {
+        await tx.investmentContribution.create({
+          data: {
+            investmentId: investment.id,
+            amount: investment.amount,
+            month: investment.month,
+            note: 'Saldo inicial migrado',
+          },
+        });
+      }
+    });
+  }
+};
+
 // Rota leve para verificar se a API está acordada.
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
@@ -99,7 +157,6 @@ app.post('/incomes', asyncHandler(async (req, res) => {
   res.status(201).json(newIncome);
 }));
 
-// Edição completa da receita. Antes essa alteração existia somente no estado do app.
 app.put('/incomes/:id', asyncHandler(async (req, res) => {
   const { description, amount: rawAmount, category, month, status, groupId } = req.body;
   const amount = parsePositiveAmount(rawAmount);
@@ -189,63 +246,146 @@ app.delete('/transactions/:id', asyncHandler(async (req, res) => {
 }));
 
 // ==========================================
-// ROTAS DE INVESTIMENTOS
+// ROTAS DE INVESTIMENTOS E APORTES
 // ==========================================
 
 app.get('/investments', asyncHandler(async (_req, res) => {
+  // Compatibilidade: transforma os registros antigos em um histórico inicial.
+  await ensureLegacyInvestmentHistory();
+
   const investments = await prisma.investment.findMany({
+    include: investmentInclude,
     orderBy: { createdAt: 'desc' },
   });
+
   res.json(investments);
 }));
 
+/**
+ * Cria um novo investimento E registra o primeiro aporte no mesmo mês.
+ * O primeiro aporte passa a afetar o saldo restante daquele mês.
+ */
 app.post('/investments', asyncHandler(async (req, res) => {
   const { description, amount: rawAmount, category, month, groupId } = req.body;
   const amount = parsePositiveAmount(rawAmount);
+  const normalizedMonth = parseRequiredText(month);
+
   if (amount === null) {
     res.status(400).json({ error: 'O valor do investimento deve ser maior que zero.' });
+    return;
+  }
+
+  if (!normalizedMonth) {
+    res.status(400).json({ error: 'Informe o mês do investimento.' });
     return;
   }
 
   const newInv = await prisma.investment.create({
-    data: { description, amount, category, month, groupId },
+    data: {
+      description,
+      amount,
+      category,
+      month: normalizedMonth,
+      groupId,
+      historyInitialized: true,
+      contributions: {
+        create: {
+          amount,
+          month: normalizedMonth,
+          note: 'Aporte inicial',
+        },
+      },
+    },
+    include: investmentInclude,
   });
+
   res.status(201).json(newInv);
 }));
 
+/**
+ * Edita apenas os metadados do investimento.
+ * O patrimônio não é alterado diretamente aqui, pois ele é consequência dos aportes.
+ */
 app.put('/investments/:id', asyncHandler(async (req, res) => {
-  const { description, amount: rawAmount, category, month, groupId } = req.body;
-  const amount = parsePositiveAmount(rawAmount);
-  if (amount === null) {
-    res.status(400).json({ error: 'O valor do investimento deve ser maior que zero.' });
-    return;
-  }
+  const { description, category, groupId } = req.body;
 
   const updatedInv = await prisma.investment.update({
     where: { id: req.params.id },
-    data: { description, amount, category, month, groupId },
+    data: { description, category, groupId },
+    include: investmentInclude,
   });
+
   res.json(updatedInv);
 }));
 
-// Persiste o botão "+ Aporte" no banco usando incremento atômico.
+/**
+ * Registra um novo aporte no mês selecionado e incrementa o patrimônio acumulado.
+ * As duas operações são atômicas: ou as duas acontecem, ou nenhuma acontece.
+ */
 app.patch('/investments/:id/aporte', asyncHandler(async (req, res) => {
   const amount = parsePositiveAmount(req.body.amount);
+  const month = parseRequiredText(req.body.month);
+
   if (amount === null) {
     res.status(400).json({ error: 'O aporte deve ser maior que zero.' });
     return;
   }
 
-  const updatedInv = await prisma.investment.update({
-    where: { id: req.params.id },
-    data: {
-      amount: { increment: amount },
-    },
+  if (!month) {
+    res.status(400).json({ error: 'Informe o mês do aporte.' });
+    return;
+  }
+
+  const updatedInv = await prisma.$transaction(async (tx) => {
+    await tx.investmentContribution.create({
+      data: {
+        investmentId: req.params.id,
+        amount,
+        month,
+        note: 'Aporte',
+      },
+    });
+
+    return tx.investment.update({
+      where: { id: req.params.id },
+      data: {
+        amount: { increment: amount },
+      },
+      include: investmentInclude,
+    });
   });
+
   res.json(updatedInv);
 }));
 
+/**
+ * Histórico completo ou filtrado por mês.
+ * Ex.: GET /investment-contributions?month=Setembro%202026
+ */
+app.get('/investment-contributions', asyncHandler(async (req, res) => {
+  await ensureLegacyInvestmentHistory();
+
+  const { month } = req.query;
+  const contributions = await prisma.investmentContribution.findMany({
+    where: month ? { month: String(month) } : undefined,
+    include: {
+      investment: {
+        select: {
+          id: true,
+          description: true,
+          category: true,
+          groupId: true,
+        },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  res.json(contributions);
+}));
+
 app.delete('/investments/:id', asyncHandler(async (req, res) => {
+  // InvestmentContribution usa onDelete: Cascade.
   await prisma.investment.delete({ where: { id: req.params.id } });
   res.status(204).send();
 }));
